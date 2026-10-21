@@ -97,7 +97,7 @@ enum Cmd {
     Article {
         title: String,
         /// HTML body. Use --content-file for a file instead.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "content_file")]
         content: Option<String>,
         /// Read the HTML body from a file.
         #[arg(long)]
@@ -116,6 +116,21 @@ enum Cmd {
         content: Option<String>,
         #[arg(short = 'i', long)]
         image: Vec<String>,
+    },
+    /// Edit an existing draft or article. Omitted fields are preserved.
+    EditArticle {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, conflicts_with = "content_file")]
+        content: Option<String>,
+        #[arg(long)]
+        content_file: Option<String>,
+        /// Append uploaded images, preserving existing content when omitted.
+        #[arg(short = 'i', long)]
+        image: Vec<String>,
+        #[arg(long)]
+        publish: bool,
     },
     /// Read back an article draft (verify a draft-only post).
     Draft { id: String },
@@ -146,7 +161,10 @@ fn main() {
     let cli = Cli::parse();
     let r = run(&cli);
     if let Err(e) = r {
-        eprintln!("error: {e:#}");
+        eprintln!(
+            "{}",
+            serde_json::json!({"error": {"message": format!("{e:#}")}})
+        );
         std::process::exit(1);
     }
 }
@@ -294,6 +312,30 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             )?);
             Ok(())
         }
+        Cmd::EditArticle {
+            id,
+            title,
+            content,
+            content_file,
+            image,
+            publish,
+        } => {
+            let mut s = session(cli)?;
+            let body = match (content, content_file) {
+                (Some(c), _) => Some(c.clone()),
+                (None, Some(f)) => Some(std::fs::read_to_string(f)?),
+                _ => None,
+            };
+            out(api::edit_article(
+                &mut s,
+                id,
+                title.as_deref(),
+                body.as_deref(),
+                image,
+                *publish,
+            )?);
+            Ok(())
+        }
         Cmd::Draft { id } => {
             let mut s = session(cli)?;
             out(api::read_draft(&mut s, id)?);
@@ -301,11 +343,34 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Cmd::DeleteArticle { id } => {
             let mut s = session(cli)?;
-            api::delete_article(&mut s, id)
+            api::delete_article(&mut s, id)?;
+            out(serde_json::json!({"id":id,"deleted":true}));
+            Ok(())
         }
         Cmd::DeletePin { id } => {
             let mut s = session(cli)?;
-            api::delete_pin(&mut s, id)
+            api::delete_pin(&mut s, id)?;
+            out(serde_json::json!({"id":id,"deleted":true}));
+            Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn edit_accepts_partial_updates_and_rejects_conflicting_body_sources() {
+        assert!(Cli::try_parse_from(["zhihu", "edit-article", "123", "--title", "new"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "zhihu",
+            "edit-article",
+            "123",
+            "--content",
+            "",
+            "--content-file",
+            "x"
+        ])
+        .is_err());
     }
 }

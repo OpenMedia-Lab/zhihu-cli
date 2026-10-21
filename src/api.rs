@@ -407,14 +407,20 @@ pub fn create_article(
     let _ = topics;
     let patch = json!({ "title": title, "content": html });
     // Zhuanlan PATCH can answer 200 with an empty body; tolerate that.
-    let resp = s.request(
-        Method::PATCH,
-        &format!("{}/articles/{}/draft", config::ZHUANLAN, id),
-        Some(&patch),
-    )?;
+    let resp = s
+        .request(
+            Method::PATCH,
+            &format!("{}/articles/{}/draft", config::ZHUANLAN, id),
+            Some(&patch),
+        )
+        .with_context(|| {
+            format!(
+                "draft {id} created; update failed; edit https://zhuanlan.zhihu.com/p/{id}/edit"
+            )
+        })?;
     if !resp.status().is_success() {
         bail!(
-            "update draft {}: {}",
+            "update draft {id} failed {}: {}",
             resp.status(),
             resp.text().unwrap_or_default()
         );
@@ -537,4 +543,91 @@ pub fn delete_pin(s: &mut Session, id: &str) -> Result<()> {
         bail!("delete pin {}", resp.status());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn images_preserve_source_and_dimensions() {
+        let html =
+            img_html(&[json!({"src":"https://pic4.zhimg.com/test.png","width":64,"height":64})]);
+        assert!(html.starts_with("<img"));
+        assert!(html.contains("https://pic4.zhimg.com/test.png"));
+        assert!(html.contains("data-rawwidth=\"64\""));
+    }
+    #[test]
+    fn edit_omits_unspecified_fields_and_accepts_explicit_empty() {
+        assert_eq!(article_patch(Some("new"), None), json!({"title":"new"}));
+        assert_eq!(article_patch(None, Some("")), json!({"content":""}));
+        assert_eq!(article_patch(None, None), json!({}));
+    }
+}
+
+fn article_patch(title: Option<&str>, content: Option<&str>) -> Value {
+    let mut patch = json!({});
+    if let Some(title) = title {
+        patch["title"] = json!(title);
+    }
+    if let Some(content) = content {
+        patch["content"] = json!(content);
+    }
+    patch
+}
+
+pub fn edit_article(
+    s: &mut Session,
+    id: &str,
+    title: Option<&str>,
+    content: Option<&str>,
+    images: &[String],
+    publish: bool,
+) -> Result<Value> {
+    let mut patch = article_patch(title, content);
+    if !images.is_empty() {
+        let mut html = match content {
+            Some(value) => value.to_string(),
+            None => read_draft(s, id)?["content"]
+                .as_str()
+                .context("draft has no content; refusing to replace it")?
+                .to_string(),
+        };
+        for path in images {
+            html.push_str(&img_html(&[upload_image(s, path, "article")?]));
+        }
+        patch["content"] = json!(html);
+    }
+    if patch.as_object().unwrap().is_empty() && !publish {
+        bail!("provide --title, --content, --content-file, --image or --publish");
+    }
+    if !patch.as_object().unwrap().is_empty() {
+        let response = s.request(
+            Method::PATCH,
+            &format!("{}/articles/{}/draft", config::ZHUANLAN, id),
+            Some(&patch),
+        )?;
+        if !response.status().is_success() {
+            bail!(
+                "update article {}: {}",
+                response.status(),
+                response.text().unwrap_or_default()
+            );
+        }
+    }
+    if publish {
+        s.json(
+            Method::PUT,
+            &format!("{}/articles/{}/publish", config::ZHUANLAN, id),
+            Some(&json!({"column":null,"commentPermission":"anyone"})),
+        )?;
+    }
+    let saved =
+        read_draft(s, id).with_context(|| format!("article {id} updated; readback failed"))?;
+    Ok(json!({
+        "id":id,
+        "state":saved.get("state").cloned().unwrap_or(json!("updated")),
+        "publish_requested":publish,
+        "edit_url":format!("https://zhuanlan.zhihu.com/p/{id}/edit"),
+        "url":format!("https://zhuanlan.zhihu.com/p/{id}")
+    }))
 }

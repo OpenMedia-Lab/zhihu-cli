@@ -156,13 +156,24 @@ impl Session {
         }
         if status == 403 {
             let text = resp.text().unwrap_or_default();
-            bail!("access denied (403): {}", &text[..text.len().min(200)]);
+            bail!(
+                "access denied (403): {}",
+                text.chars().take(200).collect::<String>()
+            );
         }
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
-            bail!("API {}: {}", status, &text[..text.len().min(200)]);
+            bail!(
+                "API {}: {}",
+                status,
+                text.chars().take(200).collect::<String>()
+            );
         }
-        Ok(resp.json().unwrap_or(serde_json::Value::Null))
+        let text = resp.text().context("read API response")?;
+        if text.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        serde_json::from_str(&text).context("API returned invalid JSON")
     }
 
     pub fn get(&mut self, url: &str) -> Result<serde_json::Value> {
@@ -171,5 +182,50 @@ impl Session {
 
     pub fn post(&mut self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         self.json(Method::POST, url, Some(body))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn serve(status: &str, body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        url
+    }
+    #[test]
+    fn unicode_error_bodies_do_not_panic() {
+        let error = Session::new()
+            .get(&serve("403 Forbidden", &"拒绝".repeat(100)))
+            .unwrap_err();
+        assert!(error.to_string().contains("access denied"));
+    }
+    #[test]
+    fn rejects_invalid_json_in_success_response() {
+        assert!(Session::new()
+            .get(&serve("200 OK", "not JSON"))
+            .unwrap_err()
+            .to_string()
+            .contains("invalid JSON"));
+    }
+    #[test]
+    fn accepts_empty_success_response() {
+        assert_eq!(
+            Session::new().get(&serve("204 No Content", "")).unwrap(),
+            serde_json::Value::Null
+        );
     }
 }

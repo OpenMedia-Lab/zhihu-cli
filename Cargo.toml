@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A lightweight Zhihu CLI — browse, read, and post drafts from the terminal"
 license = "MIT"
-repository = "https://github.com/Momoyeyu/zhihu-cli"
+repository = "https://github.com/OpenMedia-Lab/zhihu-cli"
 
 [features]
 default = ["browser-cookies"]

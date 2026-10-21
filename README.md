@@ -6,7 +6,7 @@ JSON in, JSON out. One binary, no runtime deps.
 
 ## Install
 
-Grab a binary for macOS / Linux / Windows from [Releases](../../releases), or build from source:
+Grab a binary for macOS / Linux / Windows from [Releases](https://github.com/OpenMedia-Lab/zhihu-cli/releases), or build from source:
 
 ```bash
 cargo build --release
@@ -64,6 +64,8 @@ Pins (想法) are the exception — Zhihu offers no pin preview, so `zhihu pin` 
 
 ## Known limits
 
+- Image processing can lag draft readback. Verify the saved content before publishing; a 1×1 test image was stripped while a 64×64 image survived publishing.
+
 - Article **topics** are bound at publish time by the web editor; the draft API doesn't store them. Use `zhihu topics` to resolve ids, attach in the editor.
 - `--browser` extraction needs a desktop browser where zhihu.com is logged in (feature `browser-cookies`, on by default; `--no-default-features` for a slim build).
 - QR login and `pin` are implemented but less battle-tested than the cookie/draft paths.
@@ -71,3 +73,23 @@ Pins (想法) are the exception — Zhihu offers no pin preview, so `zhihu pin` 
 ## License
 
 MIT
+
+## Editing articles
+
+```bash
+zhihu edit-article <id> --title "Revised title"
+zhihu edit-article <id> --content-file body.html -i illustration.png
+zhihu edit-article <id> --publish
+```
+
+Edits target the same article's draft. Omitted title/content fields are left out
+of the PATCH, preserving their existing values. Images append to the current
+body when no replacement body is supplied. Published articles can be edited via
+their draft and published again with `--publish`. Explicit empty content clears
+the body. Edit results report the server article state and `publish_requested`;
+a published article can retain that state while its draft is being edited.
+Runtime failures emit JSON to stderr and exit with status 1; argument
+usage errors follow clap's standard status 2.
+
+Development checks: `cargo fmt --check`, `cargo test --no-default-features`,
+`cargo check`. The cookie store must never be checked into version control.
