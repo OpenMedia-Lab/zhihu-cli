@@ -42,7 +42,7 @@ zhihu hot [--limit N]                 # 热榜
 # write
 zhihu upload <image>                  # → zhimg URL (OSS flow under the hood)
 zhihu upload --url <remote_url>       # rehost a remote image server-side
-zhihu article "标题" --content-file body.html [-i img]…
+zhihu article "标题" --content-file body.html [-i img]… [--cover cover.png] [-t topic]…
                                       # saves a DRAFT — nothing goes public
 zhihu article "标题" --content "<p>…" --publish
                                       # explicit --publish goes live
@@ -66,7 +66,7 @@ Pins (想法) are the exception — Zhihu offers no pin preview, so `zhihu pin` 
 
 - Image processing can lag draft readback. Verify the saved content before publishing; a 1×1 test image was stripped while a 64×64 image survived publishing.
 
-- Article **topics** are bound at publish time by the web editor; the draft API doesn't store them. Use `zhihu topics` to resolve ids, attach in the editor.
+- Article **topics** are resolved through the editor's picker and bound to the draft with the native topics endpoint. `-t` / `--topic` accepts repeated names or numeric IDs. Cover images use `--cover` and persist as the article's title image.
 - `--browser` extraction needs a desktop browser where zhihu.com is logged in (feature `browser-cookies`, on by default; `--no-default-features` for a slim build).
 - QR login and `pin` are implemented but less battle-tested than the cookie/draft paths.
 
@@ -79,10 +79,12 @@ MIT
 ```bash
 zhihu edit-article <id> --title "Revised title"
 zhihu edit-article <id> --content-file body.html -i illustration.png
+zhihu edit-article <id> --cover cover.png -t "Rust（编程语言）"
 zhihu edit-article <id> --publish
 ```
 
-Edits target the same article's draft. Omitted title/content fields are left out
+Edits target the same article's draft. Omitted title/content/cover/topics are preserved.
+Provided topics replace the existing topic list. Title/content fields are left out
 of the PATCH, preserving their existing values. Images append to the current
 body when no replacement body is supplied. Published articles can be edited via
 their draft and published again with `--publish`. Explicit empty content clears

@@ -216,11 +216,7 @@ pub fn upload_image(s: &mut Session, path: &str, source: &str) -> Result<Value> 
         bail!("unexpected image state: {state}");
     }
 
-    // GIFs keep their extension in the object key.
     let mut key = object_key.clone();
-    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-        key.push_str(".gif");
-    }
 
     // Zhihu flips `status` to "success" once ingest completes; the response's
     // `source` query param is what unlocks the public zhimg URL.
@@ -247,6 +243,14 @@ pub fn upload_image(s: &mut Session, path: &str, source: &str) -> Result<Value> 
         .and_then(|q| q.split('&').next())
         .unwrap_or("1f5c5e47")
         .to_string();
+    if key.is_empty() {
+        key = metadata_image_key(&info)
+            .context("image upload completed without a durable object key")?;
+    }
+    // GIFs keep their extension, including deduplicated uploads without an object_key.
+    if (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) && !key.ends_with(".gif") {
+        key.push_str(".gif");
+    }
     let canonical = format!("https://pic4.zhimg.com/{key}?source={src_param}");
 
     let (w, h) = imagesize::size(path)
@@ -383,6 +387,7 @@ pub fn create_article(
     content: &str,
     topics: &[String],
     images: &[String],
+    cover: Option<&str>,
     publish: bool,
 ) -> Result<Value> {
     let mut html = content.to_string();
@@ -394,6 +399,11 @@ pub fn create_article(
         html.push_str(&img_html(&infos));
     }
 
+    let resolved_topics = resolve_topics(s, topics)?;
+    let cover_info = cover
+        .map(|path| upload_image(s, path, "article"))
+        .transpose()?;
+
     // Step 1: create draft
     let draft = s.post(&format!("{}/articles/drafts", config::ZHUANLAN), &json!({}))?;
     let id = match draft.get("id") {
@@ -402,10 +412,10 @@ pub fn create_article(
         None => bail!("draft created but no id returned"),
     };
 
-    // Step 2: fill title/content. NOTE: zhihu binds article topics at publish
-    // time via the editor — the draft API does not store them.
-    let _ = topics;
-    let patch = json!({ "title": title, "content": html });
+    let mut patch = json!({ "title": title, "content": html });
+    if let Some(info) = &cover_info {
+        set_cover(&mut patch, info)?;
+    }
     // Zhuanlan PATCH can answer 200 with an empty body; tolerate that.
     let resp = s
         .request(
@@ -426,11 +436,15 @@ pub fn create_article(
         );
     }
 
+    bind_topics(s, &id, &resolved_topics)
+        .with_context(|| format!("draft {id} created; topic binding failed"))?;
     if !publish {
         return Ok(json!({
             "id": id,
             "state": "draft",
             "edit_url": format!("https://zhuanlan.zhihu.com/p/{}/edit", id),
+            "cover": cover_info.as_ref().and_then(|info| info["src"].as_str()).unwrap_or(""),
+            "topics": resolved_topics.iter().map(|topic| topic["name"].clone()).collect::<Vec<_>>(),
         }));
     }
 
@@ -444,6 +458,8 @@ pub fn create_article(
         "id": id,
         "state": "published",
         "url": format!("https://zhuanlan.zhihu.com/p/{}", id),
+        "cover": cover_info.as_ref().and_then(|info| info["src"].as_str()).unwrap_or(""),
+        "topics": resolved_topics.iter().map(|topic| topic["name"].clone()).collect::<Vec<_>>(),
     }))
 }
 
@@ -549,6 +565,49 @@ pub fn delete_pin(s: &mut Session, id: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn deduplicated_upload_derives_missing_object_key_from_metadata() {
+        assert_eq!(
+            metadata_image_key(
+                &json!({"src":"https://pic-private.zhihu.com/v2-abc~resize:1440.jpg?auth_key=private"})
+            ),
+            Some("v2-abc".into())
+        );
+        assert_eq!(
+            metadata_image_key(&json!({"original_hash":"abc"})),
+            Some("v2-abc".into())
+        );
+        assert_eq!(metadata_image_key(&json!({"status":"init"})), None);
+    }
+    #[test]
+    fn topic_binding_uses_numeric_ids() {
+        assert_eq!(
+            topic_ids(&[json!({"id":"19674381"}), json!({"id":19550517})]).unwrap(),
+            vec![19674381, 19550517]
+        );
+        assert!(topic_ids(&[json!({"id":"invalid"})]).is_err());
+    }
+    #[test]
+    fn cover_uses_signed_editor_url_and_preserves_omitted_fields() {
+        let mut patch = article_patch(Some("title"), None);
+        set_cover(&mut patch, &json!({"src":"public","signed_src":"signed"})).unwrap();
+        assert_eq!(
+            patch,
+            json!({"title":"title","titleImage":"signed","isTitleImageFullScreen":false})
+        );
+    }
+    #[test]
+    fn topic_picker_prefers_exact_name_and_handles_empty_lists() {
+        assert_eq!(
+            select_topic(
+                &json!([{"id":"1","name":"Rust game"},{"id":"2","name":"Rust"}]),
+                "Rust"
+            )
+            .unwrap()["id"],
+            "2"
+        );
+        assert!(select_topic(&json!([]), "missing").is_err());
+    }
+    #[test]
     fn images_preserve_source_and_dimensions() {
         let html =
             img_html(&[json!({"src":"https://pic4.zhimg.com/test.png","width":64,"height":64})]);
@@ -581,9 +640,15 @@ pub fn edit_article(
     title: Option<&str>,
     content: Option<&str>,
     images: &[String],
+    cover: Option<&str>,
+    topics: &[String],
     publish: bool,
 ) -> Result<Value> {
     let mut patch = article_patch(title, content);
+    let resolved_topics = resolve_topics(s, topics)?;
+    if let Some(path) = cover {
+        set_cover(&mut patch, &upload_image(s, path, "article")?)?;
+    }
     if !images.is_empty() {
         let mut html = match content {
             Some(value) => value.to_string(),
@@ -597,8 +662,8 @@ pub fn edit_article(
         }
         patch["content"] = json!(html);
     }
-    if patch.as_object().unwrap().is_empty() && !publish {
-        bail!("provide --title, --content, --content-file, --image or --publish");
+    if patch.as_object().unwrap().is_empty() && topics.is_empty() && !publish {
+        bail!("provide --title, --content, --content-file, --image, --cover, --topic or --publish");
     }
     if !patch.as_object().unwrap().is_empty() {
         let response = s.request(
@@ -614,6 +679,7 @@ pub fn edit_article(
             );
         }
     }
+    bind_topics(s, id, &resolved_topics)?;
     if publish {
         s.json(
             Method::PUT,
@@ -630,4 +696,105 @@ pub fn edit_article(
         "edit_url":format!("https://zhuanlan.zhihu.com/p/{id}/edit"),
         "url":format!("https://zhuanlan.zhihu.com/p/{id}")
     }))
+}
+
+fn set_cover(patch: &mut Value, info: &Value) -> Result<()> {
+    let src = info["signed_src"]
+        .as_str()
+        .filter(|src| !src.is_empty())
+        .or_else(|| info["src"].as_str())
+        .context("cover upload returned no URL")?;
+    patch["titleImage"] = json!(src);
+    patch["isTitleImageFullScreen"] = json!(false);
+    Ok(())
+}
+
+pub fn resolve_topics(s: &mut Session, inputs: &[String]) -> Result<Vec<Value>> {
+    let mut resolved = Vec::new();
+    for input in inputs {
+        let topic = if !input.is_empty() && input.bytes().all(|c| c.is_ascii_digit()) {
+            json!({"id":input,"name":input})
+        } else {
+            let response = s.get(&format!(
+                "{}/autocomplete/topics?token={}&max_matches=5&use_similar=0&topic_filter=1",
+                config::ZHUANLAN,
+                urlencoding(input)
+            ))?;
+            select_topic(&response, input)?
+        };
+        let id = topic["id"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| topic["id"].as_u64().map(|id| id.to_string()))
+            .context("topic has no id")?;
+        if !resolved.iter().any(|value: &Value| value["id"] == id) {
+            resolved.push(json!({"id":id,"name":topic["name"]}));
+        }
+    }
+    Ok(resolved)
+}
+
+fn select_topic(response: &Value, input: &str) -> Result<Value> {
+    let values = response
+        .as_array()
+        .or_else(|| response["data"].as_array())
+        .context("topic picker returned no list")?;
+    let topic = values
+        .iter()
+        .find(|topic| {
+            topic["name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(input))
+        })
+        .or_else(|| values.first())
+        .with_context(|| format!("no topic found for {input}"))?;
+    Ok(topic.clone())
+}
+
+fn bind_topics(s: &mut Session, id: &str, topics: &[Value]) -> Result<()> {
+    if topics.is_empty() {
+        return Ok(());
+    }
+    let ids = topic_ids(topics)?;
+    s.json(
+        Method::PUT,
+        &format!("{}/articles/{id}/topics", config::ZHUANLAN),
+        Some(&json!({"ids":ids})),
+    )?;
+    Ok(())
+}
+
+fn topic_ids(topics: &[Value]) -> Result<Vec<u64>> {
+    topics
+        .iter()
+        .map(|topic| {
+            topic["id"]
+                .as_u64()
+                .or_else(|| topic["id"].as_str().and_then(|id| id.parse().ok()))
+                .context("topic id must be numeric")
+        })
+        .collect()
+}
+
+fn metadata_image_key(info: &Value) -> Option<String> {
+    info.get("src")
+        .and_then(Value::as_str)
+        .and_then(|src| {
+            src.split('/').find_map(|part| {
+                let key = part.split(['~', '?']).next()?;
+                key.starts_with("v2-").then(|| key.to_string())
+            })
+        })
+        .or_else(|| {
+            info.get("original_hash")
+                .and_then(Value::as_str)
+                .filter(|hash| !hash.is_empty())
+                .map(|hash| {
+                    if hash.starts_with("v2-") {
+                        hash.to_string()
+                    } else {
+                        format!("v2-{hash}")
+                    }
+                })
+        })
 }

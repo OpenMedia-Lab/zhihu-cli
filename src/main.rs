@@ -105,6 +105,12 @@ enum Cmd {
         /// Image path (repeatable); appended to the body.
         #[arg(short = 'i', long)]
         image: Vec<String>,
+        /// Cover image path; bound as the article's title image.
+        #[arg(long)]
+        cover: Option<String>,
+        /// Topic name or numeric ID (repeatable).
+        #[arg(short = 't', long = "topic")]
+        topics: Vec<String>,
         /// Publish immediately instead of leaving a draft.
         #[arg(long)]
         publish: bool,
@@ -126,6 +132,12 @@ enum Cmd {
         content: Option<String>,
         #[arg(long)]
         content_file: Option<String>,
+        /// Replace the cover image; omitted cover is preserved.
+        #[arg(long)]
+        cover: Option<String>,
+        /// Replace topics with these names or IDs; omitted topics are preserved.
+        #[arg(short = 't', long = "topic")]
+        topics: Vec<String>,
         /// Append uploaded images, preserving existing content when omitted.
         #[arg(short = 'i', long)]
         image: Vec<String>,
@@ -280,6 +292,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             content,
             content_file,
             image,
+            cover,
+            topics,
             publish,
         } => {
             let mut s = session(cli)?;
@@ -292,8 +306,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
                 &mut s,
                 title,
                 &body,
-                &[],
+                topics,
                 image,
+                cover.as_deref(),
                 *publish,
             )?);
             Ok(())
@@ -318,6 +333,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             content,
             content_file,
             image,
+            cover,
+            topics,
             publish,
         } => {
             let mut s = session(cli)?;
@@ -332,6 +349,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
                 title.as_deref(),
                 body.as_deref(),
                 image,
+                cover.as_deref(),
+                topics,
                 *publish,
             )?);
             Ok(())
@@ -359,6 +378,21 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn article_preserves_installed_cover_and_topic_flags() {
+        assert!(Cli::try_parse_from([
+            "zhihu",
+            "article",
+            "title",
+            "--cover",
+            "cover.png",
+            "-t",
+            "Rust",
+            "--topic",
+            "19674381"
+        ])
+        .is_ok());
+    }
     #[test]
     fn edit_accepts_partial_updates_and_rejects_conflicting_body_sources() {
         assert!(Cli::try_parse_from(["zhihu", "edit-article", "123", "--title", "new"]).is_ok());
