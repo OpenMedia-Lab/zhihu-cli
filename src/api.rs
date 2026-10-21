@@ -608,6 +608,10 @@ mod tests {
         assert!(select_topic(&json!([]), "missing").is_err());
     }
     #[test]
+    fn topic_picker_rejects_nonmatching_suggestions() {
+        assert!(select_topic(&json!([{"id":"1","name":"Rust game"}]), "Rust typo").is_err());
+    }
+    #[test]
     fn images_preserve_source_and_dimensions() {
         let html =
             img_html(&[json!({"src":"https://pic4.zhimg.com/test.png","width":64,"height":64})]);
@@ -746,8 +750,9 @@ fn select_topic(response: &Value, input: &str) -> Result<Value> {
                 .as_str()
                 .is_some_and(|name| name.eq_ignore_ascii_case(input))
         })
-        .or_else(|| values.first())
-        .with_context(|| format!("no topic found for {input}"))?;
+        .with_context(|| {
+            format!("no exact topic found for {input}; provide its full name or numeric ID")
+        })?;
     Ok(topic.clone())
 }
 
