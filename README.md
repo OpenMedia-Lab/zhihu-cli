@@ -18,6 +18,7 @@ Three ways in, cookies are saved to `~/.config/zhihu-cli/cookies.json` (0600):
 
 ```bash
 zhihu login                    # QR code — scan with the Zhihu app
+zhihu login --qr --qr-file ./zhihu-login.svg --timeout 120
 zhihu login --browser          # extract zhihu.com cookies from an installed browser
 zhihu login --cookie 'z_c0=…; _xsrf=…; d_c0=…'   # or "--cookie -" to read stdin
 
@@ -95,3 +96,7 @@ usage errors follow clap's standard status 2.
 
 Development checks: `cargo fmt --check`, `cargo test --no-default-features`,
 `cargo check`. The cookie store must never be checked into version control.
+
+### QR login behavior
+
+QR remains the default. `--qr-file` writes a new SVG with Unix permissions 0600; `--timeout` accepts 1..600 seconds. Confirmation must yield an authenticated `/api/v4/me` profile before replacing the saved cookies. A pending scan, expiry, or failed account check preserves the previous session. Browser extraction and cookie/stdin import remain available.

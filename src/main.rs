@@ -29,6 +29,14 @@ enum Cmd {
         /// Extract zhihu.com cookies from an installed browser.
         #[arg(long)]
         browser: Option<Option<String>>,
+        /// Use the official QR flow (also the default).
+        #[arg(long, conflicts_with_all=["cookie","browser"])]
+        qr: bool,
+        /// Export the login QR to a new private SVG file.
+        #[arg(long, conflicts_with_all=["cookie","browser"])]
+        qr_file: Option<std::path::PathBuf>,
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
     },
     /// Clear the saved session.
     Logout,
@@ -183,7 +191,13 @@ fn main() {
 
 fn run(cli: &Cli) -> anyhow::Result<()> {
     match &cli.cmd {
-        Cmd::Login { cookie, browser } => {
+        Cmd::Login {
+            cookie,
+            browser,
+            qr_file,
+            timeout,
+            ..
+        } => {
             let cookie_owned = match cookie.as_deref() {
                 Some("-") => Some(auth::read_cookie_stdin()?),
                 other => other.map(str::to_string),
@@ -194,6 +208,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
                     .as_ref()
                     .map(|o| o.clone().unwrap_or_default())
                     .as_deref(),
+                qr_file.as_deref(),
+                *timeout,
             )
         }
         Cmd::Logout => {

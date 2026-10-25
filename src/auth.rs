@@ -3,20 +3,25 @@ use std::io::{BufRead, Write};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use reqwest::Method;
 
 use crate::config;
 use crate::http::Session;
 
 /// `zhihu login` — QR scan (default), `--cookie` paste, or `--browser` extract.
-pub fn login(cookie: Option<&str>, browser: Option<&str>) -> Result<()> {
+pub fn login(
+    cookie: Option<&str>,
+    browser: Option<&str>,
+    qr_file: Option<&std::path::Path>,
+    timeout: u64,
+) -> Result<()> {
     let cookies = if let Some(raw) = cookie {
         login_with_cookie(raw)?
     } else if let Some(name) = browser {
         login_with_browser(name)?
     } else {
-        login_qr()?
+        login_qr(qr_file, timeout)?
     };
     config::save_cookies(&cookies)?;
     eprintln!(
@@ -71,7 +76,11 @@ fn login_with_browser(_name: &str) -> Result<BTreeMap<String, String>> {
 
 /// QR login ported from the browser flow: signin cookies → udid → captcha →
 /// qrcode token → render → poll scan_info until z_c0 lands.
-fn login_qr() -> Result<BTreeMap<String, String>> {
+fn login_qr(qr_file: Option<&std::path::Path>, timeout: u64) -> Result<BTreeMap<String, String>> {
+    ensure!(
+        (1..=600).contains(&timeout),
+        "timeout must be 1..600 seconds"
+    );
     let mut s = Session::new();
     s.extra_headers = vec![
         ("Referer".into(), config::LOGIN_URL.into()),
@@ -98,7 +107,10 @@ fn login_qr() -> Result<BTreeMap<String, String>> {
 
     eprintln!("scan with the Zhihu app to log in:\n");
     render_qr(&link);
-    eprintln!("\nif the QR is unreadable, open this link on your phone:\n{link}");
+    if let Some(path) = qr_file {
+        write_qr_svg(&link, path)?;
+        eprintln!("QR SVG: {}", path.display());
+    }
     eprintln!("\nwaiting for confirmation …");
 
     // Poll — the official contract: status 0 = unscanned, 1 = scanned pending,
@@ -116,7 +128,7 @@ fn login_qr() -> Result<BTreeMap<String, String>> {
         ("x-zse-93".into(), "101_3_3.0".into()),
     ];
     let scan_url = format!("{}/{}/scan_info", config::QRCODE_API, token);
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(timeout);
     while Instant::now() < deadline {
         sleep(Duration::from_millis(800));
         let Ok(resp) = s.request(Method::GET, &scan_url, None) else {
@@ -132,9 +144,6 @@ fn login_qr() -> Result<BTreeMap<String, String>> {
         match info.get("status").and_then(|v| v.as_i64()) {
             Some(0) | Some(1) => continue,
             _ => {}
-        }
-        if info.get("access_token").is_some() || info.get("user_id").is_some() {
-            break;
         }
         for key in ["cookie", "cookies"] {
             if let Some(raw) = info.get(key).and_then(|v| v.as_str()) {
@@ -161,7 +170,35 @@ fn login_qr() -> Result<BTreeMap<String, String>> {
     if !config::has_required(&s.cookies) {
         bail!("QR login timed out or was not confirmed (no z_c0)");
     }
+    let me = s.get(&format!("{}/me", config::V4))?;
+    ensure!(
+        me.get("id")
+            .and_then(|x| x.as_str())
+            .is_some_and(|s| !s.is_empty()),
+        "QR did not produce a verified account; previous session kept"
+    );
     Ok(s.cookies)
+}
+
+fn write_qr_svg(data: &str, path: &std::path::Path) -> Result<()> {
+    let code = qrcode::QrCode::new(data.as_bytes())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .context("QR file must be a new writable SVG file")?;
+    file.write_all(
+        code.render::<qrcode::render::svg::Color>()
+            .min_dimensions(512, 512)
+            .build()
+            .as_bytes(),
+    )?;
+    Ok(())
 }
 
 fn render_qr(data: &str) {
