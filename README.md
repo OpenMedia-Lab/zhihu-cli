@@ -1,102 +1,89 @@
+<p align="center"><strong>English</strong> · <a href="README_ZH.md">简体中文</a></p>
+
+<p align="center"><img src="docs/assets/readme-hero.png" alt="zhihu-cli: write, review a draft, then publish" width="100%"></p>
+
 # zhihu-cli
 
-A lightweight, cross-platform Zhihu command-line client in Rust — built for agent pipelines (postdeck) but usable by humans too.
+**Read Zhihu and turn finished writing into reviewable article drafts.** A Rust CLI with app QR login, HTML bodies, images, covers and topics. The binary is `zhihu`.
 
-JSON in, JSON out. One binary, no runtime deps.
+[Quick start](#quick-start) · [Draft → publish](#draft-review-publish) · [Command guide](docs/usage.md) · [中文](README_ZH.md)
 
-## Install
+- **Read before writing.** Search, articles, answers, questions, pins and account history.
+- **Review a real draft.** Creating an article saves a remote draft unless you explicitly pass `--publish`.
+- **Revise the same article.** Update its draft, preserve omitted fields, then publish the revision.
 
-Grab a binary for macOS / Linux / Windows from [Releases](https://github.com/OpenMedia-Lab/zhihu-cli/releases), or build from source:
+## Quick start
 
-```bash
-cargo build --release
+Requires a current stable Rust toolchain. Install from source:
+
+```sh
+git clone https://github.com/OpenMedia-Lab/zhihu-cli.git
+cd zhihu-cli
+cargo install --path . --locked
+
+zhihu login --qr
+zhihu whoami
+zhihu search 'Transformer'
 ```
 
-## Auth
+Scan with the Zhihu app and confirm on your phone. `--qr-file ./zhihu-login.svg` exports a private QR image. Browser-cookie extraction and stdin import are alternatives; see [authentication](docs/usage.md#auth).
 
-Three ways in, cookies are saved to `~/.config/zhihu-cli/cookies.json` (0600):
+## Draft, review, publish
 
-```bash
-zhihu login                    # QR code — scan with the Zhihu app
-zhihu login --qr --qr-file ./zhihu-login.svg --timeout 120
-zhihu login --browser          # extract zhihu.com cookies from an installed browser
-zhihu login --cookie 'z_c0=…; _xsrf=…; d_c0=…'   # or "--cookie -" to read stdin
+Put your article's HTML in `body.html`. **This saves an article draft on Zhihu:**
 
-zhihu status                   # check the session
-zhihu logout
+```sh
+zhihu article 'Understanding Attention' --content-file body.html
+zhihu draft ARTICLE_ID
 ```
 
-## Commands
+Use the returned ID and `edit_url` to inspect it. Add your own cover, images or exact topic names when needed:
 
-```bash
-# read
-zhihu whoami                          # current user profile
-zhihu my-articles [--limit N]         # your own articles (pagination via --offset)
-zhihu user-articles <url_token>       # anyone's articles
-zhihu user-answers  <url_token>       # anyone's answers
-zhihu user-pins     <url_token>       # anyone's pins (想法)
-zhihu read <id|url>                   # article / answer / question / pin
-zhihu search <kw> [--kind general|topic|people]
-zhihu topics <kw>                     # resolve keyword → topic ids
-zhihu hot [--limit N]                 # 热榜
-
-# write
-zhihu upload <image>                  # → zhimg URL (OSS flow under the hood)
-zhihu upload --url <remote_url>       # rehost a remote image server-side
-zhihu article "标题" --content-file body.html [-i img]… [--cover cover.png] [-t topic]…
-                                      # saves a DRAFT — nothing goes public
-zhihu article "标题" --content "<p>…" --publish
-                                      # explicit --publish goes live
-zhihu pin "标题" -c "正文" -i img…     # 想法 — publishes immediately, no draft mode
-zhihu draft <id>                      # read a draft back (verify the preview)
-zhihu delete-article <id>             # works on drafts too
-zhihu delete-pin <id>
+```sh
+zhihu edit-article ARTICLE_ID --content-file revised.html
+zhihu edit-article ARTICLE_ID --cover cover.png -t '深度学习'
 ```
 
-## Draft-first publishing
+**This explicitly publishes the article or its updated draft:**
 
-Zhihu has no "private note" — the preview surface is the **draft box**. `zhihu article` without `--publish` creates the draft, fills title/content/images, and returns an `edit_url` you can open in a browser to review and publish manually:
-
-```json
-{ "id": "2092…", "state": "draft", "edit_url": "https://zhuanlan.zhihu.com/p/…/edit" }
+```sh
+zhihu edit-article ARTICLE_ID --publish
 ```
 
-Pins (想法) are the exception — Zhihu offers no pin preview, so `zhihu pin` publishes immediately.
+Omitted title, body, cover and topics are preserved. Supplied topics replace the existing list; images append when no replacement body is supplied. Published articles can have unpublished draft edits, so inspect draft content as well as the reported article state.
 
-## Known limits
+## Choose your workflow
 
-- Image processing can lag draft readback. Verify the saved content before publishing; a 1×1 test image was stripped while a 64×64 image survived publishing.
+| Task | Command or guide |
+|---|---|
+| Read an article, answer, question or pin | `zhihu read 'URL_OR_ID'` |
+| Inspect your articles | `zhihu my-articles --limit 10` |
+| Find exact topics | `zhihu topics 'keyword'` |
+| Rehost an image | `zhihu upload image.png` |
+| Draft, edit, publish or remove content | [Full command guide](docs/usage.md) |
 
-- Article **topics** are resolved through the editor's picker and bound to the draft with the native topics endpoint. `-t` / `--topic` accepts repeated names or numeric IDs. Cover images use `--cover` and persist as the article's title image.
-- `--browser` extraction needs a desktop browser where zhihu.com is logged in (feature `browser-cookies`, on by default; `--no-default-features` for a slim build).
-- QR login and `pin` are implemented but less battle-tested than the cookie/draft paths.
+**Pins (想法) publish immediately.** The draft-first behavior above applies to articles. Zhihu has no private-note delivery mode in this CLI. Image processing can lag; read the draft back before publishing.
+
+## Automation and limits
+
+Runtime errors are JSON on stderr with a nonzero exit status. Most successful commands return structured JSON; inspect the actual command output rather than assuming every operation has an identical schema. Platform sessions, web interfaces, moderation and limits still apply.
+
+Cookies are saved at `~/.config/zhihu-cli/cookies.json`. Keep them private and out of Git. See [login verification](docs/qr-login-verification.md) for QR confirmation and session preservation. QR and pins have less live validation than the article draft path.
+
+## Contribute
+
+Report a minimal command, expected behavior and redacted output. For source changes:
+
+```sh
+cargo fmt --check
+cargo test --no-default-features
+cargo check --locked
+```
+
+## Works with
+
+[postdeck](https://github.com/OpenMedia-Lab/postdeck) adapts articles into cards; separate CLIs handle platform operations: [xhs-cli](https://github.com/OpenMedia-Lab/xhs-cli), [zhihu-cli](https://github.com/OpenMedia-Lab/zhihu-cli), [x-cli](https://github.com/OpenMedia-Lab/x-cli). Explore the rest of [OpenMedia-Lab](https://github.com/OpenMedia-Lab).
 
 ## License
 
-MIT
-
-## Editing articles
-
-```bash
-zhihu edit-article <id> --title "Revised title"
-zhihu edit-article <id> --content-file body.html -i illustration.png
-zhihu edit-article <id> --cover cover.png -t "Rust（编程语言）"
-zhihu edit-article <id> --publish
-```
-
-Edits target the same article's draft. Omitted title/content/cover/topics are preserved.
-Provided topics replace the existing topic list. Title/content fields are left out
-of the PATCH, preserving their existing values. Images append to the current
-body when no replacement body is supplied. Published articles can be edited via
-their draft and published again with `--publish`. Explicit empty content clears
-the body. Edit results report the server article state and `publish_requested`;
-a published article can retain that state while its draft is being edited.
-Runtime failures emit JSON to stderr and exit with status 1; argument
-usage errors follow clap's standard status 2.
-
-Development checks: `cargo fmt --check`, `cargo test --no-default-features`,
-`cargo check`. The cookie store must never be checked into version control.
-
-### QR login behavior
-
-QR remains the default. `--qr-file` writes a new SVG with Unix permissions 0600; `--timeout` accepts 1..600 seconds. Confirmation must yield an authenticated `/api/v4/me` profile before replacing the saved cookies. A pending scan, expiry, or failed account check preserves the previous session. Browser extraction and cookie/stdin import remain available.
+[MIT](LICENSE).
